@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pydantic<2.0
+requests
+pandas
+numpy
+shap
+xgboost==2.0.3
+mlflow==2.13.0
+redis
+SQLAlchemy
+psycopg2-binary

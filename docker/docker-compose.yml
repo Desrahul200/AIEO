@@ -1,11 +1,145 @@
-version: '3.8'
+
 services:
+  model_server:
+    build: ../src/ml_training            
+    container_name: model_server
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow_server:5000
+      MLFLOW_REGISTRY_URI: http://mlflow_server:5000
+    depends_on:
+      - mlflow
+    command: >
+      mlflow models serve
+      -m models:/event_classifier@staging
+      --env-manager local
+      --host 0.0.0.0
+      --port 6000
+    ports:
+      - "6000:6000"
+
+  ml_training:
+    build:
+      context: ../src/ml_training
+      dockerfile: Dockerfile
+    container_name: ml_training
+    depends_on:
+      - postgres
+      - mlflow
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow_server:5000
+      MLFLOW_EXPERIMENT_NAME: Phase2_Experiment_v2
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: mlflow_db
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_PORT: "5432"
+  postgres:
+    image: postgres:latest
+    container_name: postgres
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: mlflow_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  zookeeper:
+    image: zookeeper:3.9.2
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOO_4LW_COMMANDS_WHITELIST: "stat, ruok, conf, cons, isro, isrover, srvr, wchc, wchp, get, set, del, sync, kill"
+      ZOO_TICK_TIME: 2000
+      ZOO_INIT_LIMIT: 10
+      ZOO_SYNC_LIMIT: 5
+
+  kafka:
+    image: wurstmeister/kafka:latest
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://host.docker.internal:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    depends_on:
+      - zookeeper
+    volumes:
+      - kafka_data:/kafka
+
+  event_generator:
+    build: ../src/event_generator
+    container_name: event_generator
+    depends_on:
+      - kafka
+    environment:
+      - EVENT_RATE=1000
+      - PYTHONUNBUFFERED=1
+
+  event_ingestor:
+    build: ../src/event_ingestor
+    container_name: event_ingestor
+    depends_on:
+      - kafka
+      - redis
+      - postgres
+    environment:
+      - PYTHONUNBUFFERED=1
+
   mlflow:
-    image: mlflow/mlflow:latest
+    image: ghcr.io/mlflow/mlflow
+    container_name: mlflow_server
     ports:
       - "5000:5000"
     environment:
-      - MLFLOW_ARTIFACT_ROOT=/mlflow/artifacts
+      BACKEND_STORE_URI: postgresql://user:pass@postgres:5432/mlflow_db
+      MLFLOW_ARTIFACTS_DESTINATION: file:/mlflow/mlruns
     volumes:
-      - ../mlflow:/mlflow
-    command: mlflow server --backend-store-uri sqlite:///mlflow.db --default-artifact-root /mlflow/artifacts --host 0.0.0.0
+      - D:/Project/AIEO/mlruns:/mlflow/mlruns
+    depends_on:
+      - postgres
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri $${BACKEND_STORE_URI}
+      --artifacts-destination $${MLFLOW_ARTIFACTS_DESTINATION}
+
+volumes:
+  pgdata:
+    driver: local
+    driver_opts:
+      type: none
+      device: D:/Project/AIEO/pgdata
+      o: bind
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: D:/Project/AIEO/redis_data
+      o: bind
+  kafka_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: D:/Project/AIEO/kafka_data
+      o: bind
+  mlflow_artifacts:
+    driver: local
+    driver_opts:
+      type: none
+      device: D:/Project/AIEO/mlflow
+      o: bind

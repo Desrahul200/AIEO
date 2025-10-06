@@ -1,0 +1,68 @@
+# ---------- OS cruft ----------
+.DS_Store
+Thumbs.db
+
+# ---------- Editors / IDE ----------
+.vscode/
+.idea/
+*.code-workspace
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.dist-info/
+.eggs/
+build/
+dist/
+.cache/
+.mypy_cache/
+.pytype/
+.pytest_cache/
+coverage.xml
+htmlcov/
+.tox/
+
+# ---------- Envs ----------
+.env
+.env.*
+.venv/
+venv/
+env/
+.conda/
+.ipynb_checkpoints/
+
+# ---------- Logs / temp ----------
+*.log
+*.tmp
+*.pid
+*.swp
+*.swo
+
+# ---------- Project data & local state ----------
+# Docker/WSL exports or scratch
+*.tar
+*.zip
+
+# Local volumes & runtime data (don’t commit!)
+kafka_data/
+pgdata/
+redis_data/
+mlruns/
+mlflow/
+notebooks/.ipynb_checkpoints/
+src/ml_training/artifacts/
+
+# ---------- MLflow artifacts (safety net) ----------
+**/mlruns/
+**/artifacts/*.png
+**/artifacts/*.json
+**/artifacts/*.csv
+
+# ---------- Container/build junk ----------
+# (Keep Dockerfiles, ignore build caches if any appear)
+**/.dockerignore
