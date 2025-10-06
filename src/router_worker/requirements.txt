@@ -1,0 +1,6 @@
+kafka-python
+requests
+redis
+psycopg2-binary
+SQLAlchemy
+pandas

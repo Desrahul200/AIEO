@@ -174,6 +174,10 @@ def main():
     # Sanity: files exist
     for p in (SHAP_PLOT_PATH, SHAP_JSON_PATH, FEATURE_COLS_PATH):
         assert os.path.exists(p), f"Missing artifact: {p}"
+    # Save raw booster for easy retrieval (top-level)
+    booster_path = os.path.join(ART_DIR, "booster.json")
+    model.get_booster().save_model(booster_path)
+    
 
     # ---------------------------
     # MLflow Logging + Registry
@@ -184,7 +188,7 @@ def main():
         mlflow.log_metric("accuracy", accuracy)
         mlflow.log_metric("auc", auc)
         mlflow.log_metric("pos_rate", pos_rate)
-
+        mlflow.log_artifact(booster_path)
         # Artifacts
         mlflow.log_artifact(SHAP_PLOT_PATH)
         mlflow.log_artifact(SHAP_JSON_PATH)

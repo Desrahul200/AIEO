@@ -1,5 +1,52 @@
 
 services:
+  router_worker:
+    build: ../src/router_worker
+    container_name: router_worker
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      IN_TOPIC: user_events
+      FAST_TOPIC: events.low_latency
+      BATCH_TOPIC: events.batch
+      GROUP_ID: router_worker_v1
+      ROUTER_URL: http://router:7000/score
+      BATCH_SIZE: "64"
+      BATCH_TIMEOUT: "0.8"
+      USE_REDIS: "1"
+      REDIS_URL: redis://redis:6379/0
+      USE_PG: "1"
+      PG_DSN: postgresql+psycopg2://user:pass@postgres:5432/mlflow_db
+    depends_on:
+      - kafka
+      - router
+      - redis
+      - postgres
+
+  router:
+    build: ../src/router
+    container_name: router
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow_server:5000
+      MLFLOW_REGISTRY_URI: http://mlflow_server:5000
+      MODEL_NAME: event_classifier
+      MODEL_ALIAS: staging
+      SERVE_URL: http://model_server:6000/invocations
+      ROUTING_THRESHOLD: "0.6"
+      TOP_K: "5"
+      ARTIFACT_LOCAL_ROOT: /mlflow/mlruns
+      # Optional sinks:
+      USE_REDIS: "0"     # set "1" to enable
+      USE_PG: "0"        # set "1" to enable
+      REDIS_URL: redis://redis:6379/0
+      PG_DSN: postgresql+psycopg2://user:pass@postgres:5432/mlflow_db
+    depends_on:
+      - mlflow
+      - model_server
+    ports:
+      - "7000:7000"
+    volumes:
+      - D:/Project/AIEO/mlruns:/mlflow/mlruns 
+
   model_server:
     build: ../src/ml_training            
     container_name: model_server
