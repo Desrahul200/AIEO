@@ -3,6 +3,7 @@ import json
 import logging
 from typing import List, Dict, Any
 from pathlib import Path
+from threading import Lock
 
 import requests
 import pandas as pd
@@ -13,7 +14,6 @@ import mlflow
 from mlflow.tracking import MlflowClient
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from threading import Lock
 
 # ==================== Config ====================
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow_server:5000")
@@ -21,6 +21,11 @@ MLFLOW_REGISTRY_URI = os.getenv("MLFLOW_REGISTRY_URI", MLFLOW_TRACKING_URI)
 MODEL_NAME = os.getenv("MODEL_NAME", "event_classifier")
 MODEL_ALIAS = os.getenv("MODEL_ALIAS", "staging")
 SERVE_URL = os.getenv("SERVE_URL", "http://model_server:6000/invocations")  # proba endpoint
+
+# RL decider (sidecar) toggle + URL
+USE_RL = os.getenv("USE_RL", "0") == "1"
+RL_DECIDER_URL = os.getenv("RL_DECIDER_URL")  # e.g. http://rl_decider:8080/route
+RL_TIMEOUT = float(os.getenv("RL_TIMEOUT", "2.0"))
 
 # Runtime config (mutable)
 _CONFIG_LOCK = Lock()
@@ -80,7 +85,7 @@ def _make_classifier_from_file(fp: str) -> xgb.XGBClassifier:
 
 xgb_model = None
 
-# 1) Prefer the flat booster.json at run root (what you see in MLflow UI)
+# Prefer the flat booster.json at run root (what you see in MLflow UI)
 try:
     root_infos = client.list_artifacts(RUN_ID, "")
     root_names = [i.path for i in root_infos]
@@ -93,7 +98,7 @@ try:
 except Exception as e:
     logging.warning(f"[Router] booster.json download failed: {e}")
 
-# 2) Final filesystem fallback (mounted mlruns)
+# Final filesystem fallback (mounted mlruns)
 if xgb_model is None and ARTIFACT_LOCAL_ROOT:
     try:
         run = client.get_run(RUN_ID)
@@ -145,12 +150,11 @@ def df_from_events(events: List[Dict[str, Any]]) -> tuple[pd.DataFrame, pd.DataF
     if "event_type" not in df.columns:
         raise ValueError("event_type field is required in each event")
 
-    # Lock the category space to training columns to avoid collapsing dummies on single-row batches
+    # lock category space to training cols so one-off batches don't collapse dummies
     cats = [c.replace("event_type_", "") for c in FEATURE_COLS]
     cat_type = pd.api.types.CategoricalDtype(categories=cats)
     df["event_type"] = df["event_type"].astype(cat_type)
 
-    # Build full one-hot (no drop_first), then align to training cols
     X = pd.get_dummies(df[["event_type"]], drop_first=False)
     X = X.reindex(columns=FEATURE_COLS, fill_value=0)
     return df, X
@@ -186,9 +190,43 @@ def persist(event_id: str, score: float, decision: str, topk: List[Dict[str, flo
                 {"event_id": event_id, "score": score, "decision": decision, "topk": json.dumps(topk)}
             )
 
+# ---------- RL decider integration ----------
+def decide_with_decider(score: float, topk_names: List[str]) -> str:
+    """
+    Ask the RL decider sidecar for a routing action.
+    Falls back to threshold routing if request fails or USE_RL is off.
+    """
+    if not (USE_RL and RL_DECIDER_URL):
+        return route_decision(score)
+
+    try:
+        payload = {
+            "score": float(score),
+            "topk_names": topk_names,
+            # Optional fields are omitted; decider will infer hour, etc.
+        }
+        r = requests.post(RL_DECIDER_URL, json=payload, timeout=RL_TIMEOUT)
+        r.raise_for_status()
+        body = r.json()
+        decision = body.get("decision")
+        if decision in ("low_latency", "batch", "skip"):
+            return decision
+        logging.warning(f"[Router] RL decider returned unknown decision: {body}; falling back")
+        return route_decision(score)
+    except Exception as e:
+        logging.warning(f"[Router] RL decider call failed: {e}; falling back to threshold")
+        return route_decision(score)
+
+# ---------- endpoints ----------
 @app.get("/health")
 def health():
-    return {"ok": True, "model_alias": MODEL_ALIAS, "features": len(FEATURE_COLS)}
+    return {
+        "ok": True,
+        "model_alias": MODEL_ALIAS,
+        "features": len(FEATURE_COLS),
+        "use_rl": USE_RL,
+        "rl_url": RL_DECIDER_URL or "",
+    }
 
 class ConfigIn(BaseModel):
     threshold: float | None = Field(None, ge=0.0, le=1.0, description="Routing threshold in [0,1]")
@@ -207,20 +245,10 @@ def set_config_endpoint(cfg: ConfigIn):
 def score_events(payload: Dict[str, Any]):
     """
     Request:
-    {
-      "events": [
-        {"event_id":"e1","event_type":"click"},
-        {"event_id":"e2","event_type":"purchase"}
-      ]
-    }
+      {"events":[{"event_id":"e1","event_type":"click"}, ...]}
     Response:
-    {
-      "results": [
-        {"event_id": "...", "score": 0.83, "decision": "low_latency", "top_k": [...]},
-        ...
-      ],
-      "threshold": 0.6
-    }
+      {"results":[{"event_id": "...", "score": 0.83, "decision": "...", "top_k":[...]}, ...],
+       "threshold": 0.6}
     """
     try:
         events = payload.get("events", [])
@@ -252,8 +280,16 @@ def score_events(payload: Dict[str, Any]):
         for i, row in enumerate(events):
             event_id = str(row.get("event_id", f"evt_{i}"))
             score = float(y[i])
-            decision = route_decision(score, thr)
+
+            # compute top-k first (the RL policy may use feature names)
             topk = topk_shap(shap_vals[i], FEATURE_COLS, k)
+            topk_names = [t["feature"] for t in topk]
+
+            # RL decision (with fallback)
+            decision = decide_with_decider(score, topk_names)
+            if decision == "skip":
+                # Optional: treat "skip" as batch (or drop). Here we store & route as batch.
+                decision = "batch"
 
             persist(event_id, score, decision, topk)
 

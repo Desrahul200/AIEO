@@ -1,5 +1,45 @@
 
 services:
+  rl_decider:
+    build: ../src/rl
+    container_name: rl_decider
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow_server:5000
+      - RL_POLICY_URI=runs:/23a1f0b5b15b4d708eb0257adfef1190/rl_policy/policy.zip
+    depends_on:
+      - mlflow
+    ports:
+      - "8085:8080"   # external if you want to poke it
+  feature_orchestrator:
+    build: ../src/feature_orchestrator
+    container_name: feature_orchestrator
+    depends_on:
+      - kafka
+      - postgres
+      - redis
+      - mlflow
+      - router_worker   # ensures events_scored gets populated
+    environment:
+      # Brokers & topics
+      KAFKA_BROKERS: kafka:9092
+      IN_TOPIC: events.low_latency
+      OUT_TOPIC: features.computed
+      GROUP_ID: feature_orchestrator_v1
+      # Conditional policy
+      FEATURE_THRESHOLD: "0.8"
+      IMPORTANT_FEATURES: "event_type_purchase,event_type_signup"
+      # Sinks
+      USE_REDIS: "1"
+      REDIS_URL: redis://redis:6379/0
+      USE_PG: "1"
+      PG_DSN: postgresql+psycopg2://user:pass@postgres:5432/mlflow_db
+      # Metrics
+      USE_PROMETHEUS: "1"
+      PROM_PORT: "9100"
+      # MLflow
+      MLFLOW_TRACKING_URI: http://mlflow_server:5000
+      MLFLOW_EXPERIMENT_NAME: Phase4_FeatureOrchestrator
+
   router_worker:
     build: ../src/router_worker
     container_name: router_worker
@@ -38,7 +78,9 @@ services:
       USE_REDIS: "0"     # set "1" to enable
       USE_PG: "0"        # set "1" to enable
       REDIS_URL: redis://redis:6379/0
-      PG_DSN: postgresql+psycopg2://user:pass@postgres:5432/mlflow_db
+      PG_DSN: postgresql+psycopg2://user:pass@postgres:5432/mlflow_dbW
+      USE_RL: "0"
+      RL_DECIDER_URL: "http://rl_decider:8080/route"
     depends_on:
       - mlflow
       - model_server
