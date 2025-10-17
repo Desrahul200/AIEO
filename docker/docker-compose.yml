@@ -1,5 +1,45 @@
 
 services:
+  dashboard:
+    build: ../src/dashboard
+    container_name: dashboard
+    environment:
+      AUDIT_API_URL: http://audit_api:8080
+      DASH_REFRESH_SEC: "5"
+      # PG_DSN: postgresql+psycopg2://user:pass@postgres:5432/mlflow_db   # optional: enables per-event panel
+    depends_on:
+      - audit_api
+    ports:
+      - "8501:8501"
+  audit_api:
+    build: ../src/audit
+    container_name: audit_api
+    depends_on:
+      - postgres
+    environment:
+      PG_DSN: postgresql+psycopg2://user:pass@postgres:5432/mlflow_db
+    ports:
+      - "8090:8080"
+  retrainer:
+    build: ../src/retrainer
+    container_name: retrainer
+    depends_on:
+      - postgres
+      - mlflow
+      - router
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow_server:5000
+      MLFLOW_REGISTRY_URI: http://mlflow_server:5000
+      MODEL_NAME: event_classifier
+      PROMOTE_ALIAS: staging
+      PROMOTE_IF_BETTER: "1"
+      PG_DSN: postgresql+psycopg2://user:pass@postgres:5432/mlflow_db
+      TRAIN_WINDOW_MIN: "60"
+      MIN_ROWS_TO_TRAIN: "2000"
+      RETRAIN_INTERVAL_S: "1800"
+
+      ROUTER_RELOAD_URL: http://router:7000/reload
+
   rl_decider:
     build: ../src/rl
     container_name: rl_decider
@@ -76,9 +116,9 @@ services:
       ARTIFACT_LOCAL_ROOT: /mlflow/mlruns
       # Optional sinks:
       USE_REDIS: "0"     # set "1" to enable
-      USE_PG: "0"        # set "1" to enable
+      USE_PG: "1"        # set "1" to enable
       REDIS_URL: redis://redis:6379/0
-      PG_DSN: postgresql+psycopg2://user:pass@postgres:5432/mlflow_dbW
+      PG_DSN: postgresql+psycopg2://user:pass@postgres:5432/mlflow_db
       USE_RL: "0"
       RL_DECIDER_URL: "http://rl_decider:8080/route"
     depends_on:

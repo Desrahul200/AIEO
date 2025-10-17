@@ -217,6 +217,24 @@ def decide_with_decider(score: float, topk_names: List[str]) -> str:
         logging.warning(f"[Router] RL decider call failed: {e}; falling back to threshold")
         return route_decision(score)
 
+def _load_model_from_mlflow():
+    global xgb_model, explainer, FEATURE_COLS, RUN_ID
+    mv = client.get_model_version_by_alias(MODEL_NAME, MODEL_ALIAS)
+    RUN_ID = mv.run_id
+    # feature columns
+    fpath = client.download_artifacts(RUN_ID, "feature_columns.json")
+    FEATURE_COLS[:] = json.load(open(fpath))
+    # booster
+    local_booster = client.download_artifacts(RUN_ID, "booster.json")
+    booster = xgb.Booster()
+    booster.load_model(local_booster)
+    new_clf = xgb.XGBClassifier(); new_clf._Booster = booster
+    xgb_model = new_clf
+    explainer = shap.TreeExplainer(xgb_model)
+    logging.info(f"[Router] Reloaded model {MODEL_NAME}@{MODEL_ALIAS} => run_id={RUN_ID}")
+
+
+
 # ---------- endpoints ----------
 @app.get("/health")
 def health():
@@ -241,6 +259,14 @@ def set_config_endpoint(cfg: ConfigIn):
     set_config(threshold=cfg.threshold, top_k=cfg.top_k)
     return {"ok": True, "threshold": get_threshold(), "top_k": get_top_k()}
 
+@app.post("/reload")
+def reload_endpoint():
+    try:
+        _load_model_from_mlflow()
+        return {"ok": True, "reloaded_run_id": RUN_ID}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
 @app.post("/score")
 def score_events(payload: Dict[str, Any]):
     """
