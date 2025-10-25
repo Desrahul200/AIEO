@@ -1,5 +1,26 @@
 
 services:
+  llm_summarizer:
+    build: ../src/llm_summarizer
+    container_name: llm_summarizer
+    depends_on: [mcp_server]
+    environment:
+      MCP_URL: http://mcp_server:8080
+      GROQ_BASE: https://api.groq.com/openai/v1
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_MODEL: llama-3.3-70b-versatile   # or: llama-3.1-8b-instant, mixtral-8x7b-32768, gemma2-9b-it
+    ports:
+      - "8096:8080"
+
+  mcp_server:
+    build: ../src/mcp_server
+    container_name: mcp_server
+    depends_on: [audit_api]
+    environment:
+      AUDIT_API_URL: http://audit_api:8080
+    ports:
+      - "8095:8080"
+
   dashboard:
     build: ../src/dashboard
     container_name: dashboard
@@ -14,12 +35,13 @@ services:
   audit_api:
     build: ../src/audit
     container_name: audit_api
-    depends_on:
-      - postgres
+    depends_on: [postgres]
     environment:
       PG_DSN: postgresql+psycopg2://user:pass@postgres:5432/mlflow_db
-    ports:
-      - "8090:8080"
+      ROUTER_HEALTH_URL: http://router:7000/health
+      MODEL_PING_URL:    http://model_server:6000/ping
+    ports: ["8090:8080"]
+
   retrainer:
     build: ../src/retrainer
     container_name: retrainer

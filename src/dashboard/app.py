@@ -157,6 +157,20 @@ if q:
 else:
     st.dataframe(df_recent.sort_values("created_at", ascending=False), use_container_width=True, height=320)
 
+st.divider()
+st.subheader("LLM Summary (Groq)")
+if st.button("Summarize last 60 minutes"):
+    try:
+        r = requests.post("http://llm_summarizer:8080/summarize",
+                          json={"minutes": 60, "shap_limit": 8}, timeout=20)
+        if r.ok:
+            st.markdown(r.json().get("summary", ""))
+        else:
+            st.warning(f"Summarizer error {r.status_code}: {r.text}")
+    except Exception as e:
+        st.warning(f"Failed to call summarizer: {e}")
+
+
 # --- Optional per-event panel (requires PG_DSN and audit view) ---
 if PG_ENABLED:
     st.divider()

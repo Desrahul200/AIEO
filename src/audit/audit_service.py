@@ -3,11 +3,57 @@ import os, json
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import create_engine, text
+import time, requests
 
+ROUTER_HEALTH_URL = os.getenv("ROUTER_HEALTH_URL", "http://router:7000/health")
+MODEL_PING_URL    = os.getenv("MODEL_PING_URL", "http://model_server:6000/ping")
 PG_DSN = os.getenv("PG_DSN", "postgresql+psycopg2://user:pass@postgres:5432/mlflow_db")
 engine = create_engine(PG_DSN, pool_pre_ping=True)
 app = FastAPI(title="Audit API", version="0.1.0")
 
+
+def _ping(url: str, timeout: float = 2.5) -> tuple[bool, float, str | None]:
+    t0 = time.perf_counter()
+    try:
+        r = requests.get(url, timeout=timeout)
+        ok = r.ok
+        detail = None
+        # MLflow model server usually exposes /ping -> "pong"
+        if not ok:
+            detail = f"status={r.status_code}"
+        return ok, (time.perf_counter() - t0) * 1000.0, detail
+    except Exception as e:
+        return False, (time.perf_counter() - t0) * 1000.0, str(e)
+
+@app.get("/system/health")
+def system_health():
+    # 1) DB ping + quick counts
+    db_ok, db_ms, total_5m, routed_5m = False, None, 0, 0
+    t0 = time.perf_counter()
+    try:
+        with engine.connect() as c:
+            c.execute(text("SELECT 1"))
+            db_ok = True
+            # quick situational awareness
+            total_5m  = c.execute(text("SELECT COUNT(*) FROM events_scored  WHERE created_at >= NOW() - INTERVAL '5 minutes'")).scalar_one()
+            routed_5m = c.execute(text("SELECT COUNT(*) FROM routing_events WHERE updated_at >= NOW() - INTERVAL '5 minutes'")).scalar_one()
+        db_ms = (time.perf_counter() - t0) * 1000.0
+    except Exception as e:
+        db_ms = (time.perf_counter() - t0) * 1000.0
+        db_err = str(e)
+
+    # 2) Router + Model pings
+    r_ok, r_ms, r_detail = _ping(ROUTER_HEALTH_URL, 2.0)
+    m_ok, m_ms, m_detail = _ping(MODEL_PING_URL, 2.0)
+
+    overall = bool(db_ok and r_ok and m_ok)
+    return {
+        "ok": overall,
+        "postgres": {"ok": db_ok, "ms": round(db_ms or 0, 1), "counts_last_5m": {"events": int(total_5m), "routed": int(routed_5m)}},
+        "router":   {"ok": r_ok,  "ms": round(r_ms, 1), "detail": r_detail},
+        "model":    {"ok": m_ok,  "ms": round(m_ms, 1), "detail": m_detail},
+        "ts": datetime.utcnow().isoformat() + "Z",
+    }
 @app.get("/routing/summary")
 def routing_summary(minutes: int = 60):
     q = text("""
