@@ -7,6 +7,13 @@ import streamlit as st
 AUDIT_API = os.getenv("AUDIT_API_URL", "http://audit_api:8090")
 PG_ENABLED = os.getenv("PG_DSN") is not None  # optional per-event lookup
 REFRESH_SEC = int(os.getenv("DASH_REFRESH_SEC", "5"))
+# --- add near top ---
+LLM_URL = os.getenv("LLM_SUMM_URL", "http://llm_summarizer:8080")
+if "llm_summary" not in st.session_state:
+    st.session_state.llm_summary = None
+    st.session_state.llm_summary_ts = None
+    st.session_state.llm_hold_refresh = False
+
 
 st.set_page_config(page_title="AIEO – Live Ops", layout="wide")
 
@@ -157,18 +164,48 @@ if q:
 else:
     st.dataframe(df_recent.sort_values("created_at", ascending=False), use_container_width=True, height=320)
 
+# --- LLM Summary section ---
 st.divider()
 st.subheader("LLM Summary (Groq)")
-if st.button("Summarize last 60 minutes"):
+
+col_left, col_right = st.columns([1,3])
+with col_left:
+    summ_minutes = 60
+    if st.button("Summarize last 60 minutes"):
+        try:
+            r = requests.post(f"{LLM_URL}/summarize",
+                              json={"minutes": summ_minutes, "shap_limit": 8},
+                              timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            st.session_state.llm_summary = data.get("summary", "")
+            st.session_state.llm_summary_ts = datetime.now(timezone.utc).isoformat()
+            st.session_state.llm_hold_refresh = True
+            st.success("Summary generated.")
+        except Exception as e:
+            st.error(f"Failed to call summarizer: {e}")
+
+    if st.button("Clear summary"):
+        st.session_state.llm_summary = None
+        st.session_state.llm_summary_ts = None
+        st.session_state.llm_hold_refresh = False
+
+with col_right:
+    box = st.container(border=True)
+    if st.session_state.llm_summary:
+        ts = st.session_state.llm_summary_ts or "-"
+        box.markdown(f"**Generated:** {ts} UTC")
+        box.write(st.session_state.llm_summary)
+    else:
+        box.info("Click **Summarize last 60 minutes** to generate a Groq-based summary of routing and SHAP.")
+
+# ---- Auto-refresh AFTER render ----
+if auto and not st.session_state.llm_hold_refresh:
+    time.sleep(REFRESH_SEC)
     try:
-        r = requests.post("http://llm_summarizer:8080/summarize",
-                          json={"minutes": 60, "shap_limit": 8}, timeout=20)
-        if r.ok:
-            st.markdown(r.json().get("summary", ""))
-        else:
-            st.warning(f"Summarizer error {r.status_code}: {r.text}")
-    except Exception as e:
-        st.warning(f"Failed to call summarizer: {e}")
+        st.rerun()
+    except Exception:
+        st.experimental_rerun()
 
 
 # --- Optional per-event panel (requires PG_DSN and audit view) ---
@@ -195,11 +232,3 @@ if PG_ENABLED:
             st.warning(f"Lookup failed: {e}")
 else:
     st.caption("Tip: set PG_DSN env + add /routing/by-id in the audit API to enable per-event view.")
-# ---- Auto-refresh AFTER render ----
-
-if auto:
-    time.sleep(REFRESH_SEC)
-    try:
-        st.rerun()               # Streamlit ≥ 1.31
-    except Exception:
-        st.experimental_rerun()  # fallback

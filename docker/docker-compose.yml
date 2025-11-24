@@ -37,6 +37,8 @@ services:
     container_name: audit_api
     depends_on: [postgres]
     environment:
+      AUDIT_API_URL: http://audit_api:8090
+      DASH_REFRESH_SEC: "5"
       PG_DSN: postgresql+psycopg2://user:pass@postgres:5432/mlflow_db
       ROUTER_HEALTH_URL: http://router:7000/health
       MODEL_PING_URL:    http://model_server:6000/ping
